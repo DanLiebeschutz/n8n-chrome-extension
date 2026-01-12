@@ -1,133 +1,331 @@
-// n8n Workflow Sidebar - Popup Settings Script
+// n8n Workflow Sidebar - Popup Settings Script (Multi-Instance)
+
+// State
+let instances = {};
+let editingInstanceId = null;
 
 // DOM elements
-const apiKeyInput = document.getElementById('api-key');
-const testButton = document.getElementById('test-connection');
-const saveButton = document.getElementById('save-settings');
+const listView = document.getElementById('list-view');
+const formView = document.getElementById('form-view');
+const instancesList = document.getElementById('instances-list');
+const emptyState = document.getElementById('empty-state');
+const addInstanceBtn = document.getElementById('add-instance-btn');
+const instanceNameInput = document.getElementById('instance-name');
+const instanceUrlInput = document.getElementById('instance-url');
+const instanceApiKeyInput = document.getElementById('instance-api-key');
+const settingsLink = document.getElementById('open-api-settings');
+const formTitle = document.getElementById('form-title');
+const cancelBtn = document.getElementById('cancel-btn');
+const testInstanceBtn = document.getElementById('test-instance-btn');
+const saveInstanceBtn = document.getElementById('save-instance-btn');
 const statusMessage = document.getElementById('status-message');
-const statusIndicator = document.getElementById('status-indicator');
-const statusText = document.getElementById('status-text');
-const workflowCount = document.getElementById('workflow-count');
 
-// Initialize on load
-init();
+// Initialize when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
 
 async function init() {
-  // Load saved API key
-  const {apiKey} = await chrome.storage.sync.get('apiKey');
-  if (apiKey) {
-    apiKeyInput.value = apiKey;
-    // Auto-test connection on load if API key exists
-    setTimeout(testConnection, 100);
+  try {
+    // Ensure we start with the list view visible
+    listView.style.display = 'block';
+    formView.style.display = 'none';
+
+    await loadInstances();
+    renderInstanceList();
+
+    // Event listeners
+    addInstanceBtn.addEventListener('click', () => {
+      console.log('[n8n-ext-popup] Add instance button clicked');
+      showForm();
+    });
+    cancelBtn.addEventListener('click', hideForm);
+    saveInstanceBtn.addEventListener('click', saveInstance);
+    testInstanceBtn.addEventListener('click', testInstance);
+
+    // Delegated events for instance items
+    instancesList.addEventListener('click', handleInstanceAction);
+
+    console.log('[n8n-ext-popup] Initialization complete');
+  } catch (error) {
+    console.error('[n8n-ext-popup] Initialization error:', error);
+    showStatus('Failed to initialize: ' + error.message, 'error');
   }
 }
 
-// Save settings button handler
-saveButton.addEventListener('click', async () => {
-  const apiKey = apiKeyInput.value.trim();
+async function loadInstances() {
+  try {
+    const response = await chrome.runtime.sendMessage({action: 'getAllInstances'});
+    instances = response.success ? response.instances : {};
+    console.log('[n8n-ext-popup] Loaded instances:', instances);
+  } catch (error) {
+    console.error('[n8n-ext-popup] Failed to load instances:', error);
+    instances = {};
+  }
+}
+
+function renderInstanceList() {
+  console.log('[n8n-ext-popup] renderInstanceList called, instances:', instances);
+  instancesList.innerHTML = '';
+
+  const instanceArray = Object.values(instances);
+  console.log('[n8n-ext-popup] Instance count:', instanceArray.length);
+
+  if (instanceArray.length === 0) {
+    console.log('[n8n-ext-popup] No instances, showing empty state');
+    emptyState.style.display = 'block';
+    instancesList.style.display = 'none';
+    return;
+  }
+
+  console.log('[n8n-ext-popup] Rendering instance list');
+  emptyState.style.display = 'none';
+  instancesList.style.display = 'block';
+
+  instanceArray
+    .sort((a, b) => b.lastUsed - a.lastUsed)
+    .forEach(instance => {
+      const li = document.createElement('li');
+      li.className = 'instance-item';
+      li.dataset.instanceId = instance.id;
+
+      const hostname = new URL(instance.url).hostname;
+
+      li.innerHTML = `
+        <div class="instance-info">
+          <div class="instance-name">${escapeHtml(instance.name)}</div>
+          <div class="instance-url">${escapeHtml(hostname)}</div>
+        </div>
+        <div class="instance-actions">
+          <button class="btn-action btn-test" title="Test connection" data-action="test">↻</button>
+          <button class="btn-action btn-edit" title="Edit" data-action="edit">✎</button>
+          <button class="btn-action btn-delete" title="Delete" data-action="delete">×</button>
+        </div>
+      `;
+
+      instancesList.appendChild(li);
+    });
+}
+
+function handleInstanceAction(e) {
+  const button = e.target.closest('[data-action]');
+  if (!button) return;
+
+  const action = button.dataset.action;
+  const instanceId = button.closest('.instance-item').dataset.instanceId;
+
+  if (action === 'edit') {
+    showForm(instanceId);
+  } else if (action === 'delete') {
+    deleteInstance(instanceId);
+  } else if (action === 'test') {
+    testInstanceById(instanceId);
+  }
+}
+
+function showForm(instanceId = null) {
+  console.log('[n8n-ext-popup] showForm called with instanceId:', instanceId);
+  editingInstanceId = instanceId;
+
+  if (instanceId && instances[instanceId]) {
+    const instance = instances[instanceId];
+    formTitle.textContent = 'Edit Instance';
+    instanceNameInput.value = instance.name;
+    instanceUrlInput.value = instance.url;
+    instanceApiKeyInput.value = instance.apiKey;
+    updateSettingsLink(instance.url);
+  } else {
+    formTitle.textContent = 'Add Instance';
+    instanceNameInput.value = '';
+    instanceUrlInput.value = '';
+    instanceApiKeyInput.value = '';
+    settingsLink.style.display = 'none';
+  }
+
+  console.log('[n8n-ext-popup] Switching to form view');
+  listView.style.display = 'none';
+  formView.style.display = 'block';
+  instanceNameInput.focus();
+}
+
+function hideForm() {
+  editingInstanceId = null;
+  listView.style.display = 'block';
+  formView.style.display = 'none';
+}
+
+async function saveInstance() {
+  const name = instanceNameInput.value.trim();
+  const url = instanceUrlInput.value.trim();
+  const apiKey = instanceApiKeyInput.value.trim();
+
+  if (!name) {
+    showStatus('Please enter an instance name', 'error');
+    return;
+  }
+
+  if (!url) {
+    showStatus('Please enter an instance URL', 'error');
+    return;
+  }
 
   if (!apiKey) {
     showStatus('Please enter an API key', 'error');
     return;
   }
 
+  // Validate and normalize URL
+  let parsedUrl;
   try {
-    // Save to chrome.storage.sync
-    await chrome.storage.sync.set({apiKey});
-    showStatus('Settings saved successfully', 'success');
-
-    // Test connection after save
-    setTimeout(testConnection, 500);
-
+    let urlToValidate = url;
+    if (!urlToValidate.match(/^https?:\/\//)) {
+      urlToValidate = 'https://' + urlToValidate;
+    }
+    parsedUrl = new URL(urlToValidate);
   } catch (error) {
-    showStatus(`Save failed: ${error.message}`, 'error');
-  }
-});
-
-// Test connection button handler
-testButton.addEventListener('click', testConnection);
-
-async function testConnection() {
-  const apiKey = apiKeyInput.value.trim();
-
-  if (!apiKey) {
-    showStatus('Please enter an API key first', 'error');
+    showStatus('Invalid URL format', 'error');
     return;
   }
 
-  // Show loading state
-  testButton.disabled = true;
-  testButton.textContent = 'Testing...';
-  updateConnectionStatus('connecting', 'Testing connection...');
-  workflowCount.textContent = '';
+  // Request permission
+  const origin = `${parsedUrl.protocol}//${parsedUrl.host}/*`;
+  const hasPermission = await chrome.permissions.contains({origins: [origin]});
 
-  try {
-    // Send test request to service worker
-    const response = await chrome.runtime.sendMessage({
-      action: 'testConnection'
-    });
-
-    if (response.success) {
-      showStatus('Connection successful!', 'success');
-      updateConnectionStatus('connected', 'Connected');
-
-      // Display workflow count
-      workflowCount.textContent = `${response.count} workflow${response.count !== 1 ? 's' : ''} found`;
-
-    } else {
-      throw new Error(response.error);
+  if (!hasPermission) {
+    const granted = await chrome.permissions.request({origins: [origin]});
+    if (!granted) {
+      showStatus('Permission denied', 'error');
+      return;
     }
+  }
 
-  } catch (error) {
-    let errorMessage = error.message;
+  // Save instance
+  const instanceData = {
+    id: editingInstanceId,
+    name,
+    url: parsedUrl.origin,
+    apiKey,
+    createdAt: editingInstanceId ? instances[editingInstanceId]?.createdAt : Date.now()
+  };
 
-    // User-friendly error messages
-    if (errorMessage === 'INVALID_API_KEY') {
-      errorMessage = 'Invalid API key. Please check your key and try again.';
-    } else if (errorMessage === 'API_NOT_FOUND') {
-      errorMessage = 'n8n API not found. Check your instance URL.';
-    } else if (errorMessage.includes('Failed to fetch')) {
-      errorMessage = 'Connection failed. Check your internet connection.';
-    }
+  const response = await chrome.runtime.sendMessage({
+    action: 'saveInstance',
+    instanceData
+  });
 
-    showStatus(`Connection failed: ${errorMessage}`, 'error');
-    updateConnectionStatus('error', 'Connection failed');
-
-  } finally {
-    testButton.disabled = false;
-    testButton.textContent = 'Test Connection';
+  if (response.success) {
+    showStatus('Instance saved! Reload n8n pages to see the sidebar.', 'success');
+    await loadInstances();
+    renderInstanceList();
+    hideForm();
+  } else {
+    showStatus('Failed to save instance', 'error');
   }
 }
 
-/**
- * Show status message with auto-hide
- * @param {string} message - Message to display
- * @param {string} type - 'success' or 'error'
- */
+async function deleteInstance(instanceId) {
+  const instance = instances[instanceId];
+  if (!confirm(`Delete "${instance.name}"?`)) return;
+
+  await chrome.runtime.sendMessage({
+    action: 'deleteInstance',
+    instanceId
+  });
+
+  showStatus('Instance deleted', 'success');
+  await loadInstances();
+  renderInstanceList();
+}
+
+async function testInstance() {
+  const url = instanceUrlInput.value.trim();
+  const apiKey = instanceApiKeyInput.value.trim();
+
+  if (!url || !apiKey) {
+    showStatus('Enter URL and API key first', 'error');
+    return;
+  }
+
+  testInstanceBtn.disabled = true;
+  testInstanceBtn.textContent = 'Testing...';
+
+  try {
+    // Create temporary instance for testing
+    const tempId = crypto.randomUUID();
+    let parsedUrl = url;
+    if (!url.match(/^https?:\/\//)) {
+      parsedUrl = 'https://' + url;
+    }
+
+    await chrome.runtime.sendMessage({
+      action: 'saveInstance',
+      instanceData: {
+        id: tempId,
+        name: 'temp',
+        url: new URL(parsedUrl).origin,
+        apiKey,
+        createdAt: Date.now()
+      }
+    });
+
+    const response = await chrome.runtime.sendMessage({
+      action: 'testConnection',
+      instanceId: tempId
+    });
+
+    // Clean up temp instance
+    await chrome.runtime.sendMessage({
+      action: 'deleteInstance',
+      instanceId: tempId
+    });
+
+    if (response.success) {
+      showStatus(`✓ Connected! Found ${response.count} workflows`, 'success');
+    } else {
+      throw new Error(response.error);
+    }
+  } catch (error) {
+    showStatus(`Connection failed: ${error.message}`, 'error');
+  } finally {
+    testInstanceBtn.disabled = false;
+    testInstanceBtn.textContent = 'Test';
+  }
+}
+
+async function testInstanceById(instanceId) {
+  const button = document.querySelector(`[data-instance-id="${instanceId}"] .btn-test`);
+  if (button) button.textContent = '...';
+
+  const response = await chrome.runtime.sendMessage({
+    action: 'testConnection',
+    instanceId
+  });
+
+  if (button) button.textContent = '↻';
+
+  if (response.success) {
+    showStatus(`✓ ${instances[instanceId].name}: ${response.count} workflows`, 'success');
+  } else {
+    showStatus(`✗ ${instances[instanceId].name}: ${response.error}`, 'error');
+  }
+}
+
+function updateSettingsLink(url) {
+  settingsLink.href = `${url}/settings/api`;
+  settingsLink.style.display = 'inline';
+}
+
 function showStatus(message, type) {
   statusMessage.textContent = message;
   statusMessage.className = `status-message ${type}`;
   statusMessage.classList.remove('hidden');
-
-  // Auto-hide after 5 seconds
-  setTimeout(() => {
-    statusMessage.classList.add('hidden');
-  }, 5000);
+  setTimeout(() => statusMessage.classList.add('hidden'), 5000);
 }
 
-/**
- * Update connection status indicator
- * @param {string} status - 'connected', 'error', or 'connecting'
- * @param {string} text - Status text to display
- */
-function updateConnectionStatus(status, text) {
-  statusIndicator.className = `status-dot ${status}`;
-  statusText.textContent = text;
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
 }
-
-// Handle Enter key in API key input
-apiKeyInput.addEventListener('keypress', (e) => {
-  if (e.key === 'Enter') {
-    saveButton.click();
-  }
-});

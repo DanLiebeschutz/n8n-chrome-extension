@@ -10,58 +10,55 @@
   <div class="popup-container">
     <h1>n8n Workflow Sidebar</h1>
 
-    <div class="section">
-      <label for="n8n-instance">n8n Instance URL</label>
-      <input
-        type="text"
-        id="n8n-instance"
-        value="https://n8n.srv854903.hstgr.cloud"
-        readonly
-        class="readonly"
-      >
-      <small>This extension is configured for your n8n instance</small>
+    <!-- Instance List View -->
+    <div id="list-view" class="view">
+      <div class="section">
+        <div class="section-header">
+          <h3>Instances</h3>
+          <button id="add-instance-btn" class="btn-icon" title="Add instance">+</button>
+        </div>
+
+        <ul id="instances-list" class="instances-list">
+          <!-- Populated dynamically -->
+        </ul>
+
+        <div id="empty-state" class="empty-state" style="display:none;">
+          <p>No instances configured</p>
+          <p class="hint">Click + to add your first n8n instance</p>
+        </div>
+      </div>
     </div>
 
-    <div class="section">
-      <label for="api-key">API Key</label>
-      <input
-        type="password"
-        id="api-key"
-        placeholder="Enter your n8n API key"
-        autocomplete="off"
-      >
-      <small>
-        Get your API key from n8n Settings → API
-        <a href="https://n8n.srv854903.hstgr.cloud/settings/api" target="_blank">
-          Open Settings
-        </a>
-      </small>
-    </div>
+    <!-- Instance Form View -->
+    <div id="form-view" class="view" style="display:none;">
+      <h3 id="form-title">Add Instance</h3>
 
-    <div class="button-group">
-      <button id="test-connection" class="button secondary">Test Connection</button>
-      <button id="save-settings" class="button primary">Save Settings</button>
+      <input type="hidden" id="instance-id">
+
+      <div class="form-field">
+        <label for="instance-name">Name</label>
+        <input type="text" id="instance-name" placeholder="Production">
+      </div>
+
+      <div class="form-field">
+        <label for="instance-url">Instance URL</label>
+        <input type="url" id="instance-url" placeholder="https://n8n.company.com">
+      </div>
+
+      <div class="form-field">
+        <label for="instance-api-key">API Key</label>
+        <input type="password" id="instance-api-key" placeholder="n8n_api_...">
+        <a href="#" id="open-api-settings" target="_blank" style="display:none;">Get API Key</a>
+      </div>
+
+      <div class="button-group">
+        <button id="cancel-btn" class="button secondary">Cancel</button>
+        <button id="test-instance-btn" class="button secondary">Test</button>
+        <button id="save-instance-btn" class="button primary">Save</button>
+      </div>
     </div>
 
     <div id="status-message" class="status-message hidden"></div>
-
-    <div class="section stats">
-      <h3>Status</h3>
-      <div id="connection-status">
-        <span class="status-dot" id="status-indicator"></span>
-        <span id="status-text">Not connected</span>
-      </div>
-      <div id="workflow-count"></div>
-    </div>
-
-    <div class="section footer">
-      <small>
-        Version 1.0.0 |
-        <a href="https://github.com/n8n-io/n8n" target="_blank">
-          n8n Documentation
-        </a>
-      </small>
-    </div>
   </div>
 
   <script src="popup.js"></script>

@@ -1,6 +1,8 @@
 // n8n Workflow Sidebar - Content Script
 // Injects workflow list into n8n's left sidebar
 
+console.log('[n8n-ext] Content script file loaded at:', window.location.href);
+
 // Constants
 const WORKFLOW_URL_PATTERN = /\/workflow\/([a-zA-Z0-9]+)/;
 
@@ -67,13 +69,40 @@ function findSidebarByContent() {
 // State
 let workflowsData = [];
 let currentWorkflowId = null;
+let currentInstanceId = null;
 let isInjected = false;
 
 // Initialize with a delay to let n8n load
 setTimeout(init, 1000); // Wait 1 second for n8n to initialize
 
-function init() {
+async function init() {
   console.log('[n8n-ext] Content script loaded');
+
+  try {
+    // Auto-detect which instance matches current page
+    const currentOrigin = window.location.origin;
+
+    const response = await chrome.runtime.sendMessage({
+      action: 'getInstanceByOrigin',
+      origin: currentOrigin
+    });
+
+    if (chrome.runtime.lastError) {
+      console.error('[n8n-ext] Runtime error:', chrome.runtime.lastError.message);
+      return;
+    }
+
+    if (!response || !response.success || !response.instance) {
+      console.log('[n8n-ext] No instance configured for:', currentOrigin);
+      return;
+    }
+
+    currentInstanceId = response.instance.id;
+    console.log('[n8n-ext] Detected instance:', response.instance.name, currentInstanceId);
+  } catch (error) {
+    console.error('[n8n-ext] Init error:', error);
+    return;
+  }
 
   // Check if we're on a workflow page
   const match = window.location.pathname.match(WORKFLOW_URL_PATTERN);
@@ -177,6 +206,11 @@ function injectWorkflowSection() {
       class="n8n-wf-search"
       placeholder="Search workflows..."
     >
+    <select id="n8n-wf-sort" class="n8n-wf-sort" title="Sort workflows">
+      <option value="updatedAt">Updated (Recent)</option>
+      <option value="name">Name (A-Z)</option>
+      <option value="createdAt">Created (Recent)</option>
+    </select>
     <div class="n8n-wf-filters">
       <label>
         <input type="checkbox" id="filter-active" checked> Active
@@ -190,12 +224,6 @@ function injectWorkflowSection() {
     </ul>
     <div class="n8n-wf-stats" id="n8n-wf-stats"></div>
   `;
-
-  // Add resize handle
-  const resizeHandle = document.createElement('div');
-  resizeHandle.className = 'n8n-wf-resize-handle';
-  resizeHandle.title = 'Drag to resize sidebar';
-  section.appendChild(resizeHandle);
 
   // Insert AFTER the "Personal" menu item
   const personalItem = Array.from(sidebar.querySelectorAll('a, button, div')).find(el => {
@@ -241,9 +269,6 @@ function injectWorkflowSection() {
 
   // Attach event listeners
   attachEventListeners();
-
-  // Initialize resize functionality
-  initializeResize(sidebar);
 
   isInjected = true;
   console.log('[n8n-ext] Workflow section injected successfully');
@@ -304,6 +329,28 @@ function attachEventListeners() {
       filterWorkflows();
     });
   }
+
+  // Sort dropdown
+  const sortSelect = document.getElementById('n8n-wf-sort');
+  if (sortSelect) {
+    // Load saved sort preference
+    chrome.storage.local.get(['workflowSort'], (result) => {
+      if (result.workflowSort) {
+        sortSelect.value = result.workflowSort;
+      }
+    });
+
+    sortSelect.addEventListener('change', (e) => {
+      const sortBy = e.target.value;
+      console.log('[n8n-ext] Sort by:', sortBy);
+
+      // Save preference
+      chrome.storage.local.set({workflowSort: sortBy});
+
+      // Re-filter and sort
+      filterWorkflows();
+    });
+  }
 }
 
 /**
@@ -317,6 +364,11 @@ async function loadWorkflows(forceRefresh = false) {
   // Show loading state
   listElement.innerHTML = '<li class="n8n-wf-loading">Loading workflows...</li>';
 
+  if (!currentInstanceId) {
+    showError('No instance configured for this page');
+    return;
+  }
+
   try {
     // Request workflows from service worker with timeout
     const response = await new Promise((resolve, reject) => {
@@ -326,6 +378,7 @@ async function loadWorkflows(forceRefresh = false) {
 
       chrome.runtime.sendMessage({
         action: forceRefresh ? 'refreshWorkflows' : 'fetchWorkflows',
+        instanceId: currentInstanceId,
         options: {}
       }, (response) => {
         clearTimeout(timeout);
@@ -432,19 +485,58 @@ function filterWorkflows(searchQuery = null) {
     return true;
   });
 
-  renderWorkflows(filtered);
+  // Apply sorting
+  const sortBy = document.getElementById('n8n-wf-sort')?.value || 'updatedAt';
+  const sorted = sortWorkflows(filtered, sortBy);
+
+  renderWorkflows(sorted);
+}
+
+/**
+ * Sort workflows by given criteria
+ * @param {Array} workflows - Workflows to sort
+ * @param {string} sortBy - Sort criteria ('updatedAt', 'createdAt', 'name')
+ * @returns {Array} Sorted workflows
+ */
+function sortWorkflows(workflows, sortBy) {
+  return workflows.slice().sort((a, b) => {
+    if (sortBy === 'updatedAt' || sortBy === 'createdAt') {
+      // Sort by timestamp (descending - most recent first)
+      const timeA = a[sortBy] ? new Date(a[sortBy]).getTime() : 0;
+      const timeB = b[sortBy] ? new Date(b[sortBy]).getTime() : 0;
+      return timeB - timeA; // Descending
+    } else if (sortBy === 'name') {
+      // Sort alphabetically (A-Z)
+      return a.name.localeCompare(b.name);
+    }
+    return 0;
+  });
 }
 
 /**
  * Navigate to a workflow
  * @param {string} workflowId - Workflow ID
  */
-function navigateToWorkflow(workflowId) {
-  const baseUrl = 'https://n8n.srv854903.hstgr.cloud';
-  const targetUrl = `${baseUrl}/workflow/${workflowId}`;
+async function navigateToWorkflow(workflowId) {
+  if (!currentInstanceId) {
+    showError('No instance configured');
+    return;
+  }
 
-  console.log('[n8n-ext] Opening in new tab:', targetUrl);
-  window.open(targetUrl, '_blank');
+  const response = await chrome.runtime.sendMessage({
+    action: 'getInstanceById',
+    instanceId: currentInstanceId
+  });
+
+  if (!response.success || !response.instance) {
+    showError('Instance not found');
+    return;
+  }
+
+  const targetUrl = `${response.instance.url}/workflow/${workflowId}`;
+
+  console.log('[n8n-ext] Navigating to workflow:', targetUrl);
+  window.location.href = targetUrl;
 }
 
 /**
@@ -476,7 +568,9 @@ function showError(message) {
   let displayMessage = message;
 
   // User-friendly error messages
-  if (message === 'API_KEY_MISSING') {
+  if (message === 'NO_INSTANCE_URL') {
+    displayMessage = 'Please configure your n8n instance URL in settings';
+  } else if (message === 'API_KEY_MISSING') {
     displayMessage = 'Please configure your API key in extension settings';
   } else if (message === 'INVALID_API_KEY') {
     displayMessage = 'Invalid API key. Please check settings.';
@@ -499,64 +593,6 @@ function showError(message) {
       chrome.runtime.openOptionsPage?.() || alert('Please click the extension icon to open settings');
     });
   }
-}
-
-/**
- * Initialize sidebar resize functionality
- * @param {Element} sidebar - Sidebar element
- */
-function initializeResize(sidebar) {
-  const resizeHandle = document.querySelector('.n8n-wf-resize-handle');
-  if (!resizeHandle) return;
-
-  let isResizing = false;
-  let startX = 0;
-  let startWidth = 0;
-
-  // Load saved width
-  chrome.storage.local.get(['sidebarWidth'], (result) => {
-    if (result.sidebarWidth) {
-      sidebar.style.width = result.sidebarWidth + 'px';
-      sidebar.classList.add('n8n-sidebar-resizable');
-      console.log('[n8n-ext] Applied saved sidebar width:', result.sidebarWidth);
-    }
-  });
-
-  resizeHandle.addEventListener('mousedown', (e) => {
-    e.preventDefault();
-    isResizing = true;
-    startX = e.clientX;
-    startWidth = sidebar.offsetWidth;
-    resizeHandle.classList.add('dragging');
-    document.body.style.userSelect = 'none';
-    document.body.style.cursor = 'ew-resize';
-  });
-
-  document.addEventListener('mousemove', (e) => {
-    if (!isResizing) return;
-    e.preventDefault();
-
-    const deltaX = e.clientX - startX;
-    const newWidth = Math.max(200, Math.min(600, startWidth + deltaX));
-
-    sidebar.style.width = newWidth + 'px';
-    sidebar.classList.add('n8n-sidebar-resizable');
-  });
-
-  document.addEventListener('mouseup', () => {
-    if (!isResizing) return;
-
-    isResizing = false;
-    resizeHandle.classList.remove('dragging');
-    document.body.style.userSelect = '';
-    document.body.style.cursor = '';
-
-    // Save the new width
-    const finalWidth = sidebar.offsetWidth;
-    chrome.storage.local.set({ sidebarWidth: finalWidth }, () => {
-      console.log('[n8n-ext] Saved sidebar width:', finalWidth);
-    });
-  });
 }
 
 /**
@@ -619,3 +655,6 @@ function escapeHtml(unsafe) {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
 }
+
+// Initialize the extension
+init();
