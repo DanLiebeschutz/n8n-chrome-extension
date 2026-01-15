@@ -656,5 +656,4 @@ function escapeHtml(unsafe) {
     .replace(/'/g, "&#039;");
 }
 
-// Initialize the extension
-init();
+// Note: init() is called via setTimeout at line 76
