@@ -1,6 +1,6 @@
 {
   "name": "n8n-workflow-sidebar",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "description": "Chrome extension for n8n workflow navigation - adds a sidebar to quickly switch between workflows",
   "type": "module",
   "scripts": {
@@ -21,6 +21,7 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
+    "dotenv": "^17.2.3",
     "puppeteer": "^24.0.0"
   },
   "engines": {

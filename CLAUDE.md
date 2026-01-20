@@ -238,6 +238,20 @@ Located in `scripts/`:
 
 See `scripts/README.md` for detailed documentation.
 
+### Release Notes
+
+**IMPORTANT**: When publishing a new version, always update `RELEASE_NOTES.md`:
+
+1. Add a new section at the top with the version number and date
+2. Organize changes into categories:
+   - **New Features**: New functionality added
+   - **Improvements**: Enhancements to existing features
+   - **Bug Fixes**: Issues that were resolved
+   - **Removed**: Features or functionality removed
+   - **Technical Changes**: Internal changes (permissions, APIs, architecture)
+3. Keep descriptions concise but informative
+4. Commit the updated release notes with the version bump
+
 ## Known Issues & Solutions
 
 ### Workflow List Appearing in Wrong Location
