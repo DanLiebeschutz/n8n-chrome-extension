@@ -1,11 +1,14 @@
 {
   "manifest_version": 3,
   "name": "n8n Workflow Sidebar",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Quick workflow navigation for n8n. Displays all workflows in the left sidebar for easy switching.",
 
   "permissions": [
-    "storage"
+    "storage",
+    "tabs",
+    "scripting",
+    "webNavigation"
   ],
 
   "host_permissions": [

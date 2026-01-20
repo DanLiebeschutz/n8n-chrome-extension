@@ -8,57 +8,105 @@
 </head>
 <body>
   <div class="popup-container">
-    <h1>n8n Workflow Sidebar</h1>
+    <header>
+      <h1>n8n Workflow Sidebar</h1>
+    </header>
 
     <!-- Instance List View -->
-    <div id="list-view" class="view">
-      <div class="section">
+    <main id="list-view" class="view" role="main">
+      <section class="section" aria-labelledby="instances-heading">
         <div class="section-header">
-          <h3>Instances</h3>
-          <button id="add-instance-btn" class="btn-icon" title="Add instance">+</button>
+          <h2 id="instances-heading">Instances</h2>
+          <button
+            id="add-instance-btn"
+            class="btn-icon"
+            title="Add instance"
+            aria-label="Add new n8n instance"
+          >+</button>
         </div>
 
-        <ul id="instances-list" class="instances-list">
+        <ul
+          id="instances-list"
+          class="instances-list"
+          role="list"
+          aria-label="Configured n8n instances"
+        >
           <!-- Populated dynamically -->
         </ul>
 
-        <div id="empty-state" class="empty-state" style="display:none;">
+        <div id="empty-state" class="empty-state" style="display:none;" role="status">
           <p>No instances configured</p>
           <p class="hint">Click + to add your first n8n instance</p>
         </div>
-      </div>
-    </div>
+      </section>
+    </main>
 
     <!-- Instance Form View -->
-    <div id="form-view" class="view" style="display:none;">
-      <h3 id="form-title">Add Instance</h3>
+    <div id="form-view" class="view" style="display:none;" role="form" aria-labelledby="form-title">
+      <h2 id="form-title">Add Instance</h2>
 
       <input type="hidden" id="instance-id">
 
       <div class="form-field">
         <label for="instance-name">Name</label>
-        <input type="text" id="instance-name" placeholder="Production">
+        <input
+          type="text"
+          id="instance-name"
+          placeholder="Production"
+          autocomplete="off"
+          maxlength="100"
+          required
+          aria-describedby="name-hint"
+        >
+        <small id="name-hint" class="visually-hidden">A friendly name for this n8n instance</small>
       </div>
 
       <div class="form-field">
         <label for="instance-url">Instance URL</label>
-        <input type="url" id="instance-url" placeholder="https://n8n.company.com">
+        <input
+          type="url"
+          id="instance-url"
+          placeholder="https://n8n.company.com"
+          autocomplete="url"
+          required
+          aria-describedby="url-hint"
+        >
+        <small id="url-hint" class="visually-hidden">The base URL of your n8n instance</small>
       </div>
 
       <div class="form-field">
         <label for="instance-api-key">API Key</label>
-        <input type="password" id="instance-api-key" placeholder="n8n_api_...">
-        <a href="#" id="open-api-settings" target="_blank" style="display:none;">Get API Key</a>
+        <input
+          type="password"
+          id="instance-api-key"
+          placeholder="n8n_api_..."
+          autocomplete="off"
+          required
+          aria-describedby="api-key-hint"
+        >
+        <a
+          href="#"
+          id="open-api-settings"
+          target="_blank"
+          rel="noopener noreferrer"
+          style="display:none;"
+        >Get API Key</a>
+        <small id="api-key-hint" class="visually-hidden">Your n8n API key from Settings - n8n API</small>
       </div>
 
-      <div class="button-group">
-        <button id="cancel-btn" class="button secondary">Cancel</button>
-        <button id="test-instance-btn" class="button secondary">Test</button>
-        <button id="save-instance-btn" class="button primary">Save</button>
+      <div class="button-group" role="group" aria-label="Form actions">
+        <button id="cancel-btn" class="button secondary" type="button">Cancel</button>
+        <button id="test-instance-btn" class="button primary" type="button">Test Connection</button>
+        <button id="save-instance-btn" class="button primary" type="button" style="display:none;">Save</button>
       </div>
     </div>
 
-    <div id="status-message" class="status-message hidden"></div>
+    <div
+      id="status-message"
+      class="status-message hidden"
+      role="alert"
+      aria-live="polite"
+    ></div>
   </div>
 
   <script src="popup.js"></script>

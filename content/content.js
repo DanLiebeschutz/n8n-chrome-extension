@@ -1,129 +1,337 @@
 // n8n Workflow Sidebar - Content Script
 // Injects workflow list into n8n's left sidebar
 
-console.log('[n8n-ext] Content script file loaded at:', window.location.href);
+'use strict';
 
-// Constants
-const WORKFLOW_URL_PATTERN = /\/workflow\/([a-zA-Z0-9]+)/;
+// =============================================================================
+// DUPLICATE INJECTION GUARD
+// =============================================================================
 
-// Find the sidebar menu by looking for specific n8n menu items
-function findSidebarByContent() {
-  console.log('[n8n-ext] Searching for sidebar using menu item anchors...');
+// Prevent the script from running twice (can happen with SPA navigation + manifest injection)
+if (window.__n8nWorkflowSidebarLoaded) {
+  console.log('[n8n-ext] Content script already loaded, skipping duplicate initialization');
+  // If already loaded but on a new workflow page, just trigger a refresh
+  if (window.__n8nWorkflowSidebarInit) {
+    window.__n8nWorkflowSidebarInit();
+  }
+} else {
+  window.__n8nWorkflowSidebarLoaded = true;
+}
 
-  // Strategy 1: Find "Personal" menu item and get its parent container
-  const personalLink = Array.from(document.querySelectorAll('a, button, div')).find(el => {
-    return el.textContent.trim() === 'Personal' && el.offsetHeight > 0;
+// Only continue with initialization if this is the first load
+if (!window.__n8nWorkflowSidebarInitialized) {
+  window.__n8nWorkflowSidebarInitialized = true;
+
+// =============================================================================
+// CONFIGURATION CONSTANTS
+// =============================================================================
+
+const CONFIG = Object.freeze({
+  LOG_PREFIX: '[n8n-ext]',
+  WORKFLOW_URL_PATTERN: /\/workflow\/([a-zA-Z0-9]+)/,
+  INIT_DELAY_MS: 1000,
+  SIDEBAR_TIMEOUT_MS: 10000,
+  SEARCH_DEBOUNCE_MS: 300,
+  REQUEST_TIMEOUT_MS: 30000,
+  STATUS_TIMEOUT_MS: 5000,
+  MAX_DOM_DEPTH: 10,
+});
+
+// Error message mappings for user-friendly display
+const ERROR_MESSAGES = Object.freeze({
+  NO_INSTANCE_URL: 'Please configure your n8n instance URL in settings',
+  API_KEY_MISSING: 'Please configure your API key in extension settings',
+  INVALID_API_KEY: 'Invalid API key. Please check settings.',
+  API_NOT_FOUND: 'n8n API not found. Check your instance.',
+  NETWORK_ERROR: 'Network error. Check your connection.',
+  INSTANCE_NOT_FOUND: 'Instance not found. Please reconfigure.',
+  INSTANCE_ID_REQUIRED: 'No instance configured for this page.',
+  STORAGE_ERROR: 'Storage error. Please reload the page.',
+});
+
+// =============================================================================
+// LOGGING UTILITY
+// =============================================================================
+
+const logger = {
+  _enabled: true,
+
+  log(...args) {
+    if (this._enabled) {
+      console.log(CONFIG.LOG_PREFIX, ...args);
+    }
+  },
+
+  warn(...args) {
+    if (this._enabled) {
+      console.warn(CONFIG.LOG_PREFIX, ...args);
+    }
+  },
+
+  error(...args) {
+    console.error(CONFIG.LOG_PREFIX, ...args);
+  },
+};
+
+// =============================================================================
+// STATE MANAGEMENT
+// =============================================================================
+
+/**
+ * Application state container
+ * @type {{
+ *   workflowsData: Array,
+ *   currentWorkflowId: string|null,
+ *   currentInstanceId: string|null,
+ *   isInjected: boolean,
+ *   urlObserver: MutationObserver|null
+ * }}
+ */
+const state = {
+  workflowsData: [],
+  currentWorkflowId: null,
+  currentInstanceId: null,
+  isInjected: false,
+  urlObserver: null,
+};
+
+// =============================================================================
+// UTILITY FUNCTIONS
+// =============================================================================
+
+/**
+ * Escape HTML to prevent XSS attacks
+ * @param {string} unsafe - Unsafe string that may contain HTML
+ * @returns {string} Escaped safe string
+ */
+function escapeHtml(unsafe) {
+  if (typeof unsafe !== 'string') {
+    return '';
+  }
+  return unsafe
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+/**
+ * Debounce function calls
+ * @param {Function} func - Function to debounce
+ * @param {number} wait - Wait time in ms
+ * @returns {Function} Debounced function
+ */
+function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func.apply(this, args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+}
+
+/**
+ * Get user-friendly error message from error code
+ * @param {string} errorCode - Error code or message
+ * @returns {string} User-friendly message
+ */
+function getUserFriendlyError(errorCode) {
+  return ERROR_MESSAGES[errorCode] || errorCode;
+}
+
+// =============================================================================
+// CHROME RUNTIME COMMUNICATION
+// =============================================================================
+
+/**
+ * Send message to service worker with timeout
+ * @param {Object} message - Message to send
+ * @returns {Promise<Object>} Response from service worker
+ */
+function sendMessage(message) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error('Request timeout'));
+    }, CONFIG.REQUEST_TIMEOUT_MS);
+
+    try {
+      chrome.runtime.sendMessage(message, (response) => {
+        clearTimeout(timeout);
+
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+
+        resolve(response);
+      });
+    } catch (error) {
+      clearTimeout(timeout);
+      reject(error);
+    }
   });
+}
 
-  if (personalLink) {
-    console.log('[n8n-ext] Found "Personal" menu item:', personalLink);
+// =============================================================================
+// DOM UTILITIES
+// =============================================================================
 
-    // Walk up the DOM to find the menu container
-    let container = personalLink.parentElement;
-    let depth = 0;
-
-    while (container && depth < 10) {
-      const rect = container.getBoundingClientRect();
-      const text = container.textContent || '';
-
-      // Look for a container that has multiple menu items
-      const hasOverview = text.includes('Overview');
-      const hasPersonal = text.includes('Personal');
-      const hasTemplates = text.includes('Templates');
-
-      if (hasOverview && hasPersonal && hasTemplates) {
-        console.log('[n8n-ext] ✓ Found menu container:', container.tagName, container.className);
-        return container;
-      }
-
-      container = container.parentElement;
-      depth++;
+/**
+ * Find visible element by text content
+ * @param {string} text - Text to search for
+ * @param {string} selectors - CSS selectors to search within
+ * @param {Element} container - Container to search within (defaults to document)
+ * @returns {Element|null} Found element or null
+ */
+function findVisibleElementByText(text, selectors = 'a, button, div', container = document) {
+  const elements = container.querySelectorAll(selectors);
+  for (const el of elements) {
+    if (el.textContent.trim() === text && el.offsetHeight > 0) {
+      return el;
     }
   }
-
-  // Strategy 2: Find "Overview" and look for its parent
-  const overviewLink = Array.from(document.querySelectorAll('a, button, div')).find(el => {
-    return el.textContent.trim() === 'Overview' && el.offsetHeight > 0;
-  });
-
-  if (overviewLink) {
-    console.log('[n8n-ext] Found "Overview" menu item:', overviewLink);
-    let container = overviewLink.parentElement;
-    let depth = 0;
-
-    while (container && depth < 10) {
-      const text = container.textContent || '';
-      if (text.includes('Overview') && text.includes('Personal') && text.includes('Templates')) {
-        console.log('[n8n-ext] ✓ Found menu container via Overview:', container.tagName, container.className);
-        return container;
-      }
-      container = container.parentElement;
-      depth++;
-    }
-  }
-
-  console.warn('[n8n-ext] Could not find sidebar container');
   return null;
 }
 
-// State
-let workflowsData = [];
-let currentWorkflowId = null;
-let currentInstanceId = null;
-let isInjected = false;
+/**
+ * Find the sidebar menu by looking for specific n8n menu items
+ * Uses content-based detection for robustness against DOM changes
+ * @returns {Element|null} Sidebar container element
+ */
+function findSidebarByContent() {
+  logger.log('Searching for sidebar using menu item anchors...');
 
-// Initialize with a delay to let n8n load
-setTimeout(init, 1000); // Wait 1 second for n8n to initialize
+  // Strategy 1: Find "Personal" menu item in the LEFT sidebar only
+  // First, find all elements with "Personal" text
+  const allPersonalElements = document.querySelectorAll('a, button, div, span');
 
+  for (const el of allPersonalElements) {
+    if (el.textContent.trim() === 'Personal' && el.offsetHeight > 0) {
+      // Check if this element is on the left side of the screen
+      const elRect = el.getBoundingClientRect();
+      if (elRect.left < 250) {
+        logger.log('Found "Personal" menu item on left side at x:', elRect.left);
+
+        const container = findMenuContainer(el);
+        if (container) {
+          logger.log('Found menu container via Personal:', container.tagName, container.className);
+          return container;
+        }
+      }
+    }
+  }
+
+  // Strategy 2: Find "Overview" in the left sidebar
+  for (const el of allPersonalElements) {
+    if (el.textContent.trim() === 'Overview' && el.offsetHeight > 0) {
+      const elRect = el.getBoundingClientRect();
+      if (elRect.left < 250) {
+        logger.log('Found "Overview" menu item on left side at x:', elRect.left);
+
+        const container = findMenuContainer(el);
+        if (container) {
+          logger.log('Found menu container via Overview:', container.tagName, container.className);
+          return container;
+        }
+      }
+    }
+  }
+
+  logger.warn('Could not find sidebar container');
+  return null;
+}
+
+/**
+ * Walk up DOM tree to find menu container
+ * Must be on the left side of the screen to be valid
+ * @param {Element} startElement - Element to start from
+ * @returns {Element|null} Menu container or null
+ */
+function findMenuContainer(startElement) {
+  let container = startElement.parentElement;
+  let depth = 0;
+
+  while (container && depth < CONFIG.MAX_DOM_DEPTH) {
+    const text = container.textContent || '';
+
+    // Look for a container that has multiple menu items
+    const hasRequiredItems =
+      text.includes('Overview') &&
+      text.includes('Personal') &&
+      text.includes('Templates');
+
+    if (hasRequiredItems) {
+      // Verify this container is on the left side of the screen
+      const rect = container.getBoundingClientRect();
+      if (rect.left < 100 && rect.width < 400) {
+        return container;
+      }
+      // If not on left side, this is probably the wrong container, keep searching
+      logger.log('Found container with menu items but not in sidebar position, continuing search');
+    }
+
+    container = container.parentElement;
+    depth++;
+  }
+
+  return null;
+}
+
+// =============================================================================
+// INITIALIZATION
+// =============================================================================
+
+/**
+ * Initialize the content script
+ * Detects instance, checks if on workflow page, and injects sidebar
+ */
 async function init() {
-  console.log('[n8n-ext] Content script loaded');
+  logger.log('Content script initializing');
 
   try {
     // Auto-detect which instance matches current page
     const currentOrigin = window.location.origin;
 
-    const response = await chrome.runtime.sendMessage({
+    const response = await sendMessage({
       action: 'getInstanceByOrigin',
-      origin: currentOrigin
+      origin: currentOrigin,
     });
 
-    if (chrome.runtime.lastError) {
-      console.error('[n8n-ext] Runtime error:', chrome.runtime.lastError.message);
+    if (!response?.success || !response?.instance) {
+      logger.log('No instance configured for:', currentOrigin);
       return;
     }
 
-    if (!response || !response.success || !response.instance) {
-      console.log('[n8n-ext] No instance configured for:', currentOrigin);
-      return;
-    }
-
-    currentInstanceId = response.instance.id;
-    console.log('[n8n-ext] Detected instance:', response.instance.name, currentInstanceId);
+    state.currentInstanceId = response.instance.id;
+    logger.log('Detected instance:', response.instance.name);
   } catch (error) {
-    console.error('[n8n-ext] Init error:', error);
+    logger.error('Init error:', error.message);
     return;
   }
 
   // Check if we're on a workflow page
-  const match = window.location.pathname.match(WORKFLOW_URL_PATTERN);
+  const match = window.location.pathname.match(CONFIG.WORKFLOW_URL_PATTERN);
   if (!match) {
-    console.log('[n8n-ext] Not a workflow page, skipping injection');
+    logger.log('Not a workflow page, skipping injection');
     return;
   }
 
-  currentWorkflowId = match[1];
-  console.log('[n8n-ext] Current workflow ID:', currentWorkflowId);
+  state.currentWorkflowId = match[1];
+  logger.log('Current workflow ID:', state.currentWorkflowId);
 
   // Wait for sidebar to be ready
-  waitForSidebar().then((sidebar) => {
-    if (sidebar) {
-      console.log('[n8n-ext] Sidebar found, injecting workflow section');
-      injectWorkflowSection();
-      loadWorkflows();
-    } else {
-      console.error('[n8n-ext] Sidebar not found after timeout');
-    }
-  });
+  const sidebar = await waitForSidebar();
+  if (sidebar) {
+    logger.log('Sidebar found, injecting workflow section');
+    injectWorkflowSection();
+    loadWorkflows();
+  } else {
+    logger.error('Sidebar not found after timeout');
+  }
 
   // Handle SPA navigation
   observeUrlChanges();
@@ -133,11 +341,11 @@ async function init() {
  * Wait for n8n sidebar to appear in DOM
  * @returns {Promise<Element|null>} Sidebar element or null if timeout
  */
-async function waitForSidebar() {
-  // Try to find sidebar immediately by content
-  let sidebar = findSidebarByContent();
+function waitForSidebar() {
+  // Try to find sidebar immediately
+  const sidebar = findSidebarByContent();
   if (sidebar) {
-    return sidebar;
+    return Promise.resolve(sidebar);
   }
 
   // If not found, wait using MutationObserver
@@ -145,7 +353,7 @@ async function waitForSidebar() {
     const observer = new MutationObserver(() => {
       const sidebar = findSidebarByContent();
       if (sidebar) {
-        console.log('[n8n-ext] Sidebar appeared in DOM');
+        logger.log('Sidebar appeared in DOM');
         observer.disconnect();
         resolve(sidebar);
       }
@@ -153,42 +361,67 @@ async function waitForSidebar() {
 
     observer.observe(document.body, {
       childList: true,
-      subtree: true
+      subtree: true,
     });
 
-    // Timeout after 10 seconds
+    // Timeout after configured duration
     setTimeout(() => {
       observer.disconnect();
-      console.error('[n8n-ext] Sidebar not found after timeout');
+      logger.error('Sidebar not found after timeout');
       resolve(null);
-    }, 10000);
+    }, CONFIG.SIDEBAR_TIMEOUT_MS);
   });
 }
+
+// =============================================================================
+// UI INJECTION
+// =============================================================================
 
 /**
  * Inject workflow section into sidebar
  */
 function injectWorkflowSection() {
-  if (isInjected) {
-    console.log('[n8n-ext] Already injected, skipping');
+  if (state.isInjected) {
+    logger.log('Already injected, skipping');
     return;
   }
 
-  const sidebar = findSidebar();
+  const sidebar = findSidebarByContent();
   if (!sidebar) {
-    console.error('[n8n-ext] Sidebar not found for injection');
+    logger.error('Sidebar not found for injection');
     return;
   }
 
-  console.log('[n8n-ext] Injecting into sidebar:', sidebar.tagName, sidebar.className);
+  logger.log('Injecting into sidebar:', sidebar.tagName, sidebar.className);
 
-  // Check if this looks like the correct sidebar (should contain navigation items)
-  const hasNavItems = sidebar.querySelector('a, button, [role="menuitem"]');
-  if (!hasNavItems) {
-    console.warn('[n8n-ext] Sidebar element may not be the navigation menu');
-  }
+  // Create workflow section
+  const section = createWorkflowSection();
 
-  // Create workflow section container
+  // Insert section into DOM
+  insertSection(sidebar, section);
+
+  // Attach event listeners
+  attachEventListeners();
+
+  state.isInjected = true;
+  logger.log('Workflow section injected successfully');
+
+  // Log position for debugging
+  const rect = section.getBoundingClientRect();
+  logger.log('Section position:', {
+    x: rect.x,
+    y: rect.y,
+    width: rect.width,
+    height: rect.height,
+    visible: rect.width > 0 && rect.height > 0,
+  });
+}
+
+/**
+ * Create the workflow section DOM element
+ * @returns {HTMLDivElement} Workflow section element
+ */
+function createWorkflowSection() {
   const section = document.createElement('div');
   section.id = 'n8n-workflow-ext-section';
   section.className = 'n8n-workflow-ext-section';
@@ -196,8 +429,8 @@ function injectWorkflowSection() {
   section.innerHTML = `
     <div class="n8n-wf-header">
       <h3>My Workflows</h3>
-      <button id="n8n-wf-refresh" class="n8n-wf-refresh" title="Refresh workflows">
-        ↻
+      <button id="n8n-wf-refresh" class="n8n-wf-refresh" title="Refresh workflows" aria-label="Refresh workflows">
+        <span aria-hidden="true">&#8635;</span>
       </button>
     </div>
     <input
@@ -205,13 +438,14 @@ function injectWorkflowSection() {
       id="n8n-wf-search"
       class="n8n-wf-search"
       placeholder="Search workflows..."
+      aria-label="Search workflows"
     >
-    <select id="n8n-wf-sort" class="n8n-wf-sort" title="Sort workflows">
+    <select id="n8n-wf-sort" class="n8n-wf-sort" title="Sort workflows" aria-label="Sort workflows">
       <option value="updatedAt">Updated (Recent)</option>
       <option value="name">Name (A-Z)</option>
       <option value="createdAt">Created (Recent)</option>
     </select>
-    <div class="n8n-wf-filters">
+    <div class="n8n-wf-filters" role="group" aria-label="Workflow filters">
       <label>
         <input type="checkbox" id="filter-active" checked> Active
       </label>
@@ -219,76 +453,62 @@ function injectWorkflowSection() {
         <input type="checkbox" id="filter-inactive" checked> Inactive
       </label>
     </div>
-    <ul id="n8n-wf-list" class="n8n-wf-list">
-      <li class="n8n-wf-loading">Loading workflows...</li>
+    <ul id="n8n-wf-list" class="n8n-wf-list" role="listbox" aria-label="Workflows">
+      <li class="n8n-wf-loading" role="status">Loading workflows...</li>
     </ul>
-    <div class="n8n-wf-stats" id="n8n-wf-stats"></div>
+    <div class="n8n-wf-stats" id="n8n-wf-stats" aria-live="polite"></div>
   `;
 
-  // Insert AFTER the "Personal" menu item
-  const personalItem = Array.from(sidebar.querySelectorAll('a, button, div')).find(el => {
-    return el.textContent.trim() === 'Personal' && el.offsetHeight > 0;
-  });
+  return section;
+}
+
+/**
+ * Insert section into sidebar at appropriate location
+ * @param {Element} sidebar - Sidebar container
+ * @param {Element} section - Section to insert
+ */
+function insertSection(sidebar, section) {
+  // Try to insert after "Personal" menu item (search within sidebar only)
+  const personalItem = findVisibleElementByText('Personal', 'a, button, div', sidebar);
 
   if (personalItem) {
-    console.log('[n8n-ext] Found "Personal" item, inserting workflow section after it');
+    logger.log('Found "Personal" item, inserting workflow section after it');
 
-    // Find the actual menu item element (might need to go up a level or two)
+    // Find the actual menu item element (might need to go up a level)
     let insertAfter = personalItem;
-
-    // If Personal is a link inside a div/li, use the parent
     if (personalItem.parentElement && personalItem.parentElement.tagName !== 'NAV') {
       insertAfter = personalItem.parentElement;
     }
 
-    // Insert after the Personal item
     insertAfter.insertAdjacentElement('afterend', section);
-    console.log('[n8n-ext] Inserted after Personal menu item');
-  } else {
-    // Fallback: look for Templates and insert before it
-    const templatesItem = Array.from(sidebar.querySelectorAll('a, button, div')).find(el => {
-      return el.textContent.trim() === 'Templates' && el.offsetHeight > 0;
-    });
-
-    if (templatesItem) {
-      console.log('[n8n-ext] Found "Templates" item, inserting workflow section before it');
-      let insertBefore = templatesItem;
-
-      if (templatesItem.parentElement && templatesItem.parentElement.tagName !== 'NAV') {
-        insertBefore = templatesItem.parentElement;
-      }
-
-      insertBefore.insertAdjacentElement('beforebegin', section);
-      console.log('[n8n-ext] Inserted before Templates menu item');
-    } else {
-      // Last resort: append to sidebar
-      console.log('[n8n-ext] Could not find Personal or Templates, appending to sidebar');
-      sidebar.appendChild(section);
-    }
+    logger.log('Inserted after Personal menu item');
+    return;
   }
 
-  // Attach event listeners
-  attachEventListeners();
+  // Fallback: look for Templates and insert before it (search within sidebar only)
+  const templatesItem = findVisibleElementByText('Templates', 'a, button, div', sidebar);
 
-  isInjected = true;
-  console.log('[n8n-ext] Workflow section injected successfully');
+  if (templatesItem) {
+    logger.log('Found "Templates" item, inserting workflow section before it');
 
-  // Verify it's visible
-  const rect = section.getBoundingClientRect();
-  console.log('[n8n-ext] Section position:', { x: rect.x, y: rect.y, width: rect.width, height: rect.height, visible: rect.width > 0 && rect.height > 0 });
+    let insertBefore = templatesItem;
+    if (templatesItem.parentElement && templatesItem.parentElement.tagName !== 'NAV') {
+      insertBefore = templatesItem.parentElement;
+    }
 
-  // Check parent container
-  console.log('[n8n-ext] Parent element:', sidebar.tagName, sidebar.className);
-  console.log('[n8n-ext] Parent dimensions:', { width: sidebar.offsetWidth, height: sidebar.offsetHeight });
+    insertBefore.insertAdjacentElement('beforebegin', section);
+    logger.log('Inserted before Templates menu item');
+    return;
+  }
+
+  // Last resort: append to sidebar
+  logger.log('Could not find Personal or Templates, appending to sidebar');
+  sidebar.appendChild(section);
 }
 
-/**
- * Find sidebar element
- * @returns {Element|null} Sidebar element or null
- */
-function findSidebar() {
-  return findSidebarByContent();
-}
+// =============================================================================
+// EVENT HANDLING
+// =============================================================================
 
 /**
  * Attach event listeners to UI elements
@@ -297,19 +517,13 @@ function attachEventListeners() {
   // Refresh button
   const refreshButton = document.getElementById('n8n-wf-refresh');
   if (refreshButton) {
-    refreshButton.addEventListener('click', () => {
-      console.log('[n8n-ext] Refresh clicked');
-      loadWorkflows(true);
-    });
+    refreshButton.addEventListener('click', handleRefresh);
   }
 
-  // Search input
+  // Search input with debounce
   const searchInput = document.getElementById('n8n-wf-search');
   if (searchInput) {
-    searchInput.addEventListener('input', debounce((e) => {
-      console.log('[n8n-ext] Search:', e.target.value);
-      filterWorkflows(e.target.value);
-    }, 300));
+    searchInput.addEventListener('input', debounce(handleSearch, CONFIG.SEARCH_DEBOUNCE_MS));
   }
 
   // Filter checkboxes
@@ -317,44 +531,78 @@ function attachEventListeners() {
   const inactiveFilter = document.getElementById('filter-inactive');
 
   if (activeFilter) {
-    activeFilter.addEventListener('change', () => {
-      console.log('[n8n-ext] Active filter:', activeFilter.checked);
-      filterWorkflows();
-    });
+    activeFilter.addEventListener('change', handleFilterChange);
   }
 
   if (inactiveFilter) {
-    inactiveFilter.addEventListener('change', () => {
-      console.log('[n8n-ext] Inactive filter:', inactiveFilter.checked);
-      filterWorkflows();
-    });
+    inactiveFilter.addEventListener('change', handleFilterChange);
   }
 
   // Sort dropdown
   const sortSelect = document.getElementById('n8n-wf-sort');
   if (sortSelect) {
-    // Load saved sort preference
-    chrome.storage.local.get(['workflowSort'], (result) => {
-      if (result.workflowSort) {
-        sortSelect.value = result.workflowSort;
-      }
-    });
-
-    sortSelect.addEventListener('change', (e) => {
-      const sortBy = e.target.value;
-      console.log('[n8n-ext] Sort by:', sortBy);
-
-      // Save preference
-      chrome.storage.local.set({workflowSort: sortBy});
-
-      // Re-filter and sort
-      filterWorkflows();
-    });
+    loadSortPreference(sortSelect);
+    sortSelect.addEventListener('change', handleSortChange);
   }
 }
 
 /**
- * Load workflows from service worker
+ * Handle refresh button click
+ */
+function handleRefresh() {
+  logger.log('Refresh clicked');
+  loadWorkflows(true);
+}
+
+/**
+ * Handle search input
+ * @param {Event} event - Input event
+ */
+function handleSearch(event) {
+  logger.log('Search:', event.target.value);
+  filterWorkflows(event.target.value);
+}
+
+/**
+ * Handle filter checkbox change
+ */
+function handleFilterChange() {
+  filterWorkflows();
+}
+
+/**
+ * Handle sort dropdown change
+ * @param {Event} event - Change event
+ */
+function handleSortChange(event) {
+  const sortBy = event.target.value;
+  logger.log('Sort by:', sortBy);
+
+  // Save preference
+  chrome.storage.local.set({ workflowSort: sortBy });
+
+  // Re-filter and sort
+  filterWorkflows();
+}
+
+/**
+ * Load sort preference from storage
+ * @param {HTMLSelectElement} sortSelect - Sort select element
+ */
+function loadSortPreference(sortSelect) {
+  chrome.storage.local.get(['workflowSort'], (result) => {
+    if (result.workflowSort) {
+      sortSelect.value = result.workflowSort;
+    }
+  });
+}
+
+// =============================================================================
+// WORKFLOW LOADING AND RENDERING
+// =============================================================================
+
+/**
+ * Load workflows from service worker using API key authentication
  * @param {boolean} forceRefresh - Force reload from API
  */
 async function loadWorkflows(forceRefresh = false) {
@@ -362,49 +610,31 @@ async function loadWorkflows(forceRefresh = false) {
   if (!listElement) return;
 
   // Show loading state
-  listElement.innerHTML = '<li class="n8n-wf-loading">Loading workflows...</li>';
+  listElement.innerHTML = '<li class="n8n-wf-loading" role="status">Loading workflows...</li>';
 
-  if (!currentInstanceId) {
+  if (!state.currentInstanceId) {
     showError('No instance configured for this page');
     return;
   }
 
   try {
-    // Request workflows from service worker with timeout
-    const response = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('Request timeout'));
-      }, 30000); // 30 second timeout
-
-      chrome.runtime.sendMessage({
-        action: forceRefresh ? 'refreshWorkflows' : 'fetchWorkflows',
-        instanceId: currentInstanceId,
-        options: {}
-      }, (response) => {
-        clearTimeout(timeout);
-
-        // Check for Chrome runtime errors
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-
-        resolve(response);
-      });
+    const response = await sendMessage({
+      action: forceRefresh ? 'refreshWorkflows' : 'fetchWorkflows',
+      instanceId: state.currentInstanceId,
+      options: {},
     });
 
-    console.log('[n8n-ext] Workflow response:', response);
+    logger.log('Service worker response received');
 
-    if (!response || !response.success) {
+    if (!response?.success) {
       throw new Error(response?.error || 'No response from service worker');
     }
 
-    workflowsData = response.data || [];
-    renderWorkflows(workflowsData);
-    updateStats(workflowsData, response.cached);
-
+    state.workflowsData = response.data || [];
+    filterWorkflows();
+    updateStats(state.workflowsData, response.cached);
   } catch (error) {
-    console.error('[n8n-ext] Load workflows error:', error);
+    logger.error('Load workflows error:', error.message);
     showError(error.message);
   }
 }
@@ -416,70 +646,99 @@ async function loadWorkflows(forceRefresh = false) {
 function renderWorkflows(workflows) {
   const listElement = document.getElementById('n8n-wf-list');
   if (!listElement) {
-    console.error('[n8n-ext] List element not found!');
+    logger.error('List element not found');
     return;
   }
 
-  if (workflows.length === 0) {
-    listElement.innerHTML = '<li class="n8n-wf-empty">No workflows found</li>';
+  if (!workflows || workflows.length === 0) {
+    listElement.innerHTML = '<li class="n8n-wf-empty" role="status">No workflows found</li>';
     return;
   }
 
+  // Clear existing content
   listElement.innerHTML = '';
 
-  workflows.forEach((workflow, index) => {
-    const li = document.createElement('li');
-    li.className = 'n8n-wf-item';
+  // Create document fragment for better performance
+  const fragment = document.createDocumentFragment();
 
-    // Highlight current workflow
-    if (workflow.id === currentWorkflowId) {
-      li.classList.add('n8n-wf-active');
-    }
-
-    li.dataset.workflowId = workflow.id;
-
-    li.innerHTML = `
-      <span class="n8n-wf-status ${workflow.active ? 'active' : 'inactive'}"></span>
-      <span class="n8n-wf-name">${escapeHtml(workflow.name)}</span>
-    `;
-
-    li.addEventListener('click', () => {
-      navigateToWorkflow(workflow.id);
-    });
-
-    listElement.appendChild(li);
-
-    // Debug first few items
-    if (index < 3) {
-      console.log(`[n8n-ext] Rendered workflow ${index + 1}:`, workflow.name, 'ID:', workflow.id);
-    }
+  workflows.forEach((workflow) => {
+    const li = createWorkflowItem(workflow);
+    fragment.appendChild(li);
   });
 
-  console.log('[n8n-ext] Rendered', workflows.length, 'workflows');
-
-  // Check if list is actually visible
-  const listRect = listElement.getBoundingClientRect();
-  console.log('[n8n-ext] List position:', { x: listRect.x, y: listRect.y, width: listRect.width, height: listRect.height });
-  console.log('[n8n-ext] List has', listElement.children.length, 'child elements');
+  listElement.appendChild(fragment);
+  logger.log('Rendered', workflows.length, 'workflows');
 }
 
 /**
+ * Create a workflow list item
+ * @param {Object} workflow - Workflow object
+ * @returns {HTMLLIElement} List item element
+ */
+function createWorkflowItem(workflow) {
+  const li = document.createElement('li');
+  li.className = 'n8n-wf-item';
+  li.role = 'option';
+  li.tabIndex = 0;
+
+  // Highlight current workflow
+  if (workflow.id === state.currentWorkflowId) {
+    li.classList.add('n8n-wf-active');
+    li.setAttribute('aria-selected', 'true');
+  }
+
+  li.dataset.workflowId = workflow.id;
+
+  const statusClass = workflow.active ? 'active' : 'inactive';
+  const statusLabel = workflow.active ? 'Active workflow' : 'Inactive workflow';
+
+  li.innerHTML = `
+    <span class="n8n-wf-status ${statusClass}" aria-label="${statusLabel}"></span>
+    <span class="n8n-wf-name">${escapeHtml(workflow.name)}</span>
+  `;
+
+  // Click handler
+  li.addEventListener('click', () => navigateToWorkflow(workflow.id));
+
+  // Keyboard handler for accessibility
+  li.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      navigateToWorkflow(workflow.id);
+    }
+  });
+
+  return li;
+}
+
+// =============================================================================
+// FILTERING AND SORTING
+// =============================================================================
+
+/**
  * Filter workflows based on search and checkboxes
- * @param {string} searchQuery - Search query (optional)
+ * @param {string|null} searchQuery - Search query (optional)
  */
 function filterWorkflows(searchQuery = null) {
-  const search = searchQuery !== null ? searchQuery : (document.getElementById('n8n-wf-search')?.value || '');
+  const search = searchQuery !== null
+    ? searchQuery
+    : (document.getElementById('n8n-wf-search')?.value || '');
+
   const showActive = document.getElementById('filter-active')?.checked ?? true;
   const showInactive = document.getElementById('filter-inactive')?.checked ?? true;
 
-  const filtered = workflowsData.filter(wf => {
+  const filtered = state.workflowsData.filter((wf) => {
     // Status filter
     if (wf.active && !showActive) return false;
     if (!wf.active && !showInactive) return false;
 
-    // Search filter
-    if (search && !wf.name.toLowerCase().includes(search.toLowerCase())) {
-      return false;
+    // Search filter (case-insensitive)
+    if (search) {
+      const searchLower = search.toLowerCase();
+      const nameLower = (wf.name || '').toLowerCase();
+      if (!nameLower.includes(searchLower)) {
+        return false;
+      }
     }
 
     return true;
@@ -496,48 +755,67 @@ function filterWorkflows(searchQuery = null) {
  * Sort workflows by given criteria
  * @param {Array} workflows - Workflows to sort
  * @param {string} sortBy - Sort criteria ('updatedAt', 'createdAt', 'name')
- * @returns {Array} Sorted workflows
+ * @returns {Array} Sorted workflows (new array)
  */
 function sortWorkflows(workflows, sortBy) {
-  return workflows.slice().sort((a, b) => {
-    if (sortBy === 'updatedAt' || sortBy === 'createdAt') {
-      // Sort by timestamp (descending - most recent first)
-      const timeA = a[sortBy] ? new Date(a[sortBy]).getTime() : 0;
-      const timeB = b[sortBy] ? new Date(b[sortBy]).getTime() : 0;
-      return timeB - timeA; // Descending
-    } else if (sortBy === 'name') {
-      // Sort alphabetically (A-Z)
-      return a.name.localeCompare(b.name);
+  return [...workflows].sort((a, b) => {
+    switch (sortBy) {
+      case 'updatedAt':
+      case 'createdAt': {
+        // Sort by timestamp (descending - most recent first)
+        const timeA = a[sortBy] ? new Date(a[sortBy]).getTime() : 0;
+        const timeB = b[sortBy] ? new Date(b[sortBy]).getTime() : 0;
+        return timeB - timeA;
+      }
+      case 'name': {
+        // Sort alphabetically (A-Z)
+        const nameA = a.name || '';
+        const nameB = b.name || '';
+        return nameA.localeCompare(nameB);
+      }
+      default:
+        return 0;
     }
-    return 0;
   });
 }
+
+// =============================================================================
+// NAVIGATION
+// =============================================================================
 
 /**
  * Navigate to a workflow
  * @param {string} workflowId - Workflow ID
  */
 async function navigateToWorkflow(workflowId) {
-  if (!currentInstanceId) {
+  if (!state.currentInstanceId) {
     showError('No instance configured');
     return;
   }
 
-  const response = await chrome.runtime.sendMessage({
-    action: 'getInstanceById',
-    instanceId: currentInstanceId
-  });
+  try {
+    const response = await sendMessage({
+      action: 'getInstanceById',
+      instanceId: state.currentInstanceId,
+    });
 
-  if (!response.success || !response.instance) {
-    showError('Instance not found');
-    return;
+    if (!response?.success || !response?.instance) {
+      showError('Instance not found');
+      return;
+    }
+
+    const targetUrl = `${response.instance.url}/workflow/${workflowId}`;
+    logger.log('Navigating to workflow:', targetUrl);
+    window.location.href = targetUrl;
+  } catch (error) {
+    logger.error('Navigation error:', error.message);
+    showError('Failed to navigate');
   }
-
-  const targetUrl = `${response.instance.url}/workflow/${workflowId}`;
-
-  console.log('[n8n-ext] Navigating to workflow:', targetUrl);
-  window.location.href = targetUrl;
 }
+
+// =============================================================================
+// UI UPDATES
+// =============================================================================
 
 /**
  * Update stats footer
@@ -548,39 +826,30 @@ function updateStats(workflows, cached = false) {
   const statsElement = document.getElementById('n8n-wf-stats');
   if (!statsElement) return;
 
-  const activeCount = workflows.filter(wf => wf.active).length;
+  const totalCount = workflows.length;
+  const activeCount = workflows.filter((wf) => wf.active).length;
   const now = new Date().toLocaleTimeString();
-  const cacheIndicator = cached ? '(cached)' : '';
+  const cacheIndicator = cached ? ' (cached)' : '';
+  const workflowLabel = totalCount === 1 ? 'workflow' : 'workflows';
 
   statsElement.innerHTML = `
-    <small>${workflows.length} workflow${workflows.length !== 1 ? 's' : ''} (${activeCount} active) | Updated: ${now} ${cacheIndicator}</small>
+    <small>${totalCount} ${workflowLabel} (${activeCount} active) | Updated: ${now}${cacheIndicator}</small>
   `;
 }
 
 /**
  * Show error message in list
- * @param {string} message - Error message
+ * @param {string} message - Error message or error code
  */
 function showError(message) {
   const listElement = document.getElementById('n8n-wf-list');
   if (!listElement) return;
 
-  let displayMessage = message;
-
-  // User-friendly error messages
-  if (message === 'NO_INSTANCE_URL') {
-    displayMessage = 'Please configure your n8n instance URL in settings';
-  } else if (message === 'API_KEY_MISSING') {
-    displayMessage = 'Please configure your API key in extension settings';
-  } else if (message === 'INVALID_API_KEY') {
-    displayMessage = 'Invalid API key. Please check settings.';
-  } else if (message === 'API_NOT_FOUND') {
-    displayMessage = 'n8n API not found. Check your instance.';
-  }
+  const displayMessage = getUserFriendlyError(message);
 
   listElement.innerHTML = `
-    <li class="n8n-wf-error">
-      <span class="error-icon">⚠️</span>
+    <li class="n8n-wf-error" role="alert">
+      <span class="error-icon" aria-hidden="true">&#9888;</span>
       <span>${escapeHtml(displayMessage)}</span>
       <button class="n8n-wf-settings-link" id="open-settings">Open Settings</button>
     </li>
@@ -590,70 +859,116 @@ function showError(message) {
   const settingsButton = document.getElementById('open-settings');
   if (settingsButton) {
     settingsButton.addEventListener('click', () => {
-      chrome.runtime.openOptionsPage?.() || alert('Please click the extension icon to open settings');
+      if (chrome.runtime.openOptionsPage) {
+        chrome.runtime.openOptionsPage();
+      } else {
+        alert('Please click the extension icon to open settings');
+      }
     });
   }
 }
 
+// =============================================================================
+// SPA NAVIGATION HANDLING
+// =============================================================================
+
 /**
  * Observe URL changes for SPA navigation
+ * Uses throttled MutationObserver to detect URL changes
  */
 function observeUrlChanges() {
+  // Disconnect existing observer if any
+  if (state.urlObserver) {
+    state.urlObserver.disconnect();
+  }
+
   let lastUrl = window.location.href;
+  let throttleTimeout = null;
 
-  new MutationObserver(() => {
-    const currentUrl = window.location.href;
-    if (currentUrl !== lastUrl) {
-      lastUrl = currentUrl;
+  state.urlObserver = new MutationObserver(() => {
+    // Throttle checks to avoid excessive processing
+    if (throttleTimeout) return;
 
-      const match = window.location.pathname.match(WORKFLOW_URL_PATTERN);
-      if (match) {
-        currentWorkflowId = match[1];
-        console.log('[n8n-ext] URL changed, new workflow ID:', currentWorkflowId);
+    throttleTimeout = setTimeout(() => {
+      throttleTimeout = null;
 
-        // Re-highlight active workflow
-        document.querySelectorAll('.n8n-wf-item').forEach(item => {
-          item.classList.toggle('n8n-wf-active',
-            item.dataset.workflowId === currentWorkflowId
-          );
-        });
+      const currentUrl = window.location.href;
+      if (currentUrl !== lastUrl) {
+        lastUrl = currentUrl;
+        handleUrlChange();
       }
+    }, 100);
+  });
+
+  state.urlObserver.observe(document, {
+    subtree: true,
+    childList: true,
+  });
+}
+
+/**
+ * Handle URL change in SPA
+ */
+function handleUrlChange() {
+  const match = window.location.pathname.match(CONFIG.WORKFLOW_URL_PATTERN);
+
+  if (match) {
+    state.currentWorkflowId = match[1];
+    logger.log('URL changed, new workflow ID:', state.currentWorkflowId);
+
+    // Re-highlight active workflow
+    updateActiveWorkflowHighlight();
+  }
+}
+
+/**
+ * Update active workflow highlighting
+ */
+function updateActiveWorkflowHighlight() {
+  const items = document.querySelectorAll('.n8n-wf-item');
+
+  items.forEach((item) => {
+    const isActive = item.dataset.workflowId === state.currentWorkflowId;
+    item.classList.toggle('n8n-wf-active', isActive);
+    item.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+}
+
+// =============================================================================
+// MESSAGE LISTENER
+// =============================================================================
+
+/**
+ * Listen for messages from popup (e.g., when credentials are updated)
+ */
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'credentialsUpdated') {
+    logger.log('Received credentialsUpdated message');
+
+    // If sidebar not yet injected and on a workflow page, try to initialize
+    if (!state.isInjected) {
+      init();
+    } else {
+      // Already injected, just refresh workflows
+      loadWorkflows(true);
     }
-  }).observe(document, {subtree: true, childList: true});
-}
 
-// Utilities
+    sendResponse({ success: true });
+  }
+  return true; // Keep channel open for async response
+});
 
-/**
- * Debounce function calls
- * @param {Function} func - Function to debounce
- * @param {number} wait - Wait time in ms
- * @returns {Function} Debounced function
- */
-function debounce(func, wait) {
-  let timeout;
-  return function executedFunction(...args) {
-    const later = () => {
-      clearTimeout(timeout);
-      func(...args);
-    };
-    clearTimeout(timeout);
-    timeout = setTimeout(later, wait);
-  };
-}
+// =============================================================================
+// INITIALIZATION ENTRY POINT
+// =============================================================================
 
-/**
- * Escape HTML to prevent XSS
- * @param {string} unsafe - Unsafe string
- * @returns {string} Escaped string
- */
-function escapeHtml(unsafe) {
-  return unsafe
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
+// Expose init function globally for re-injection scenarios
+window.__n8nWorkflowSidebarInit = init;
 
-// Note: init() is called via setTimeout at line 76
+// Initialize with a delay to let n8n load
+// Note: init() is called once via setTimeout - do NOT add additional calls
+setTimeout(init, CONFIG.INIT_DELAY_MS);
+
+logger.log('Content script file loaded at:', window.location.href);
+
+} // End of duplicate injection guard
