@@ -199,22 +199,25 @@ async function detectN8nUrlFromTabs() {
   try {
     const tabs = await chrome.tabs.query({});
 
-    // Look for tabs with n8n-like URLs (contains /workflow/ or common n8n patterns)
+    // Look for tabs with n8n-like URLs (contains /workflow/ or hostname starts with n8n.)
     for (const tab of tabs) {
       if (!tab.url) continue;
 
-      // Check for n8n workflow URLs
-      if (tab.url.includes('/workflow/')) {
-        const parsed = safeParseUrl(tab.url);
-        if (parsed.isValid) {
-          // Check if this origin is already configured
-          const isAlreadyConfigured = Object.values(state.instances).some(
-            (instance) => safeParseUrl(instance.url).origin === parsed.origin
-          );
-          if (!isAlreadyConfigured) {
-            logger.log('Detected n8n URL from tab:', parsed.origin);
-            return parsed.origin;
-          }
+      const parsed = safeParseUrl(tab.url);
+      if (!parsed.isValid) continue;
+
+      // Check for n8n URLs: /workflow/ path OR hostname starting with "n8n."
+      const isN8nUrl = tab.url.includes('/workflow/') ||
+                       parsed.hostname.startsWith('n8n.');
+
+      if (isN8nUrl) {
+        // Check if this origin is already configured
+        const isAlreadyConfigured = Object.values(state.instances).some(
+          (instance) => safeParseUrl(instance.url).origin === parsed.origin
+        );
+        if (!isAlreadyConfigured) {
+          logger.log('Detected n8n URL from tab:', parsed.origin);
+          return parsed.origin;
         }
       }
     }

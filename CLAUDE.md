@@ -58,6 +58,7 @@ The extension follows Chrome's Manifest V3 architecture with three main componen
   - Validates and normalizes URLs (auto-adds https:// if missing)
   - Instance storage in `chrome.storage.sync` (synced across devices)
   - User-friendly error messages for common issues
+  - **Auto-detect n8n URLs**: When adding a new instance, auto-fills URL field by detecting open tabs with n8n URLs (matches `/workflow/` paths or hostnames starting with `n8n.`)
 
 ## Development Workflow
 

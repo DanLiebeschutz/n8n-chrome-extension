@@ -1,5 +1,12 @@
 # Release Notes
 
+## v1.0.4 (January 25, 2025)
+
+### Improvements
+- **Expanded n8n URL Detection**: When adding a new instance, the popup now auto-detects n8n URLs from open tabs by matching hostnames starting with `n8n.` (e.g., `n8n.example.com`) in addition to URLs containing `/workflow/`
+
+---
+
 ## v1.0.3 (January 21, 2025)
 
 ### New Features
