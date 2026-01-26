@@ -6,6 +6,7 @@ node_modules/
 
 # Build artifacts
 builds/
+*.zip
 
 # OS files
 .DS_Store
