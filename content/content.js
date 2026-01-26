@@ -445,6 +445,9 @@ function createWorkflowSection() {
       <option value="name">Name (A-Z)</option>
       <option value="createdAt">Created (Recent)</option>
     </select>
+    <select id="n8n-wf-creator" class="n8n-wf-creator" title="Filter by creator" aria-label="Filter by creator">
+      <option value="">All creators</option>
+    </select>
     <div class="n8n-wf-filters" role="group" aria-label="Workflow filters">
       <label>
         <input type="checkbox" id="filter-active" checked> Active
@@ -544,6 +547,12 @@ function attachEventListeners() {
     loadSortPreference(sortSelect);
     sortSelect.addEventListener('change', handleSortChange);
   }
+
+  // Creator filter dropdown
+  const creatorSelect = document.getElementById('n8n-wf-creator');
+  if (creatorSelect) {
+    creatorSelect.addEventListener('change', handleCreatorChange);
+  }
 }
 
 /**
@@ -582,6 +591,15 @@ function handleSortChange(event) {
   chrome.storage.local.set({ workflowSort: sortBy });
 
   // Re-filter and sort
+  filterWorkflows();
+}
+
+/**
+ * Handle creator filter dropdown change
+ */
+function handleCreatorChange() {
+  const creatorSelect = document.getElementById('n8n-wf-creator');
+  logger.log('Filter by creator:', creatorSelect?.value || 'All');
   filterWorkflows();
 }
 
@@ -631,6 +649,7 @@ async function loadWorkflows(forceRefresh = false) {
     }
 
     state.workflowsData = response.data || [];
+    populateCreatorDropdown(state.workflowsData);
     filterWorkflows();
     updateStats(state.workflowsData, response.cached);
   } catch (error) {
@@ -716,7 +735,87 @@ function createWorkflowItem(workflow) {
 // =============================================================================
 
 /**
- * Filter workflows based on search and checkboxes
+ * Get creator name from workflow object
+ * n8n workflows may have createdBy as an object with firstName/lastName or email
+ * @param {Object} workflow - Workflow object
+ * @returns {string} Creator name or 'Unknown'
+ */
+function getCreatorName(workflow) {
+  const createdBy = workflow.createdBy;
+
+  if (!createdBy) {
+    return 'Unknown';
+  }
+
+  // If createdBy is an object with user info
+  if (typeof createdBy === 'object') {
+    // Try firstName + lastName first
+    if (createdBy.firstName || createdBy.lastName) {
+      return [createdBy.firstName, createdBy.lastName].filter(Boolean).join(' ').trim() || 'Unknown';
+    }
+    // Fall back to email
+    if (createdBy.email) {
+      return createdBy.email;
+    }
+    // Fall back to id if nothing else
+    if (createdBy.id) {
+      return `User ${createdBy.id}`;
+    }
+  }
+
+  // If createdBy is a string (user ID or name)
+  if (typeof createdBy === 'string') {
+    return createdBy;
+  }
+
+  return 'Unknown';
+}
+
+/**
+ * Extract unique creators from workflows and populate the dropdown
+ * @param {Array} workflows - Array of workflow objects
+ */
+function populateCreatorDropdown(workflows) {
+  const creatorSelect = document.getElementById('n8n-wf-creator');
+  if (!creatorSelect) return;
+
+  // Get current selection to preserve it
+  const currentValue = creatorSelect.value;
+
+  // Extract unique creators
+  const creatorsSet = new Set();
+  workflows.forEach((wf) => {
+    const creator = getCreatorName(wf);
+    if (creator && creator !== 'Unknown') {
+      creatorsSet.add(creator);
+    }
+  });
+
+  // Sort creators alphabetically
+  const creators = Array.from(creatorsSet).sort((a, b) =>
+    a.toLowerCase().localeCompare(b.toLowerCase())
+  );
+
+  // Rebuild dropdown options
+  creatorSelect.innerHTML = '<option value="">All creators</option>';
+
+  creators.forEach((creator) => {
+    const option = document.createElement('option');
+    option.value = creator;
+    option.textContent = creator;
+    creatorSelect.appendChild(option);
+  });
+
+  // Restore previous selection if still valid
+  if (currentValue && creators.includes(currentValue)) {
+    creatorSelect.value = currentValue;
+  }
+
+  logger.log('Populated creator dropdown with', creators.length, 'creators');
+}
+
+/**
+ * Filter workflows based on search, checkboxes, and creator
  * @param {string|null} searchQuery - Search query (optional)
  */
 function filterWorkflows(searchQuery = null) {
@@ -726,11 +825,20 @@ function filterWorkflows(searchQuery = null) {
 
   const showActive = document.getElementById('filter-active')?.checked ?? true;
   const showInactive = document.getElementById('filter-inactive')?.checked ?? true;
+  const selectedCreator = document.getElementById('n8n-wf-creator')?.value || '';
 
   const filtered = state.workflowsData.filter((wf) => {
     // Status filter
     if (wf.active && !showActive) return false;
     if (!wf.active && !showInactive) return false;
+
+    // Creator filter
+    if (selectedCreator) {
+      const creator = getCreatorName(wf);
+      if (creator !== selectedCreator) {
+        return false;
+      }
+    }
 
     // Search filter (case-insensitive)
     if (search) {
