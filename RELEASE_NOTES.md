@@ -1,5 +1,12 @@
 # Release Notes
 
+## v1.0.5 (January 26, 2025)
+
+### New Features
+- **Filter by Workflow Creator**: New dropdown filter to show workflows by specific creator. Supports various n8n user formats (name, email, user ID)
+
+---
+
 ## v1.0.4 (January 25, 2025)
 
 ### Improvements
