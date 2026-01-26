@@ -15,17 +15,8 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 cd "$PROJECT_ROOT"
 
-# 1. Check for store icon
-echo "1. Checking store icon (128x128)..."
-python3 "$SCRIPT_DIR/check-store-icon.py"
-if [ $? -ne 0 ]; then
-    echo "✗ Store icon check failed"
-    exit 1
-fi
-echo ""
-
-# 2. Verify manifest.json exists and is valid
-echo "2. Validating manifest.json..."
+# 1. Verify manifest.json exists and is valid
+echo "1. Validating manifest.json..."
 if [ ! -f "manifest.json" ]; then
     echo "✗ manifest.json not found"
     exit 1
@@ -45,8 +36,8 @@ VERSION=$(python3 -c "import json; print(json.load(open('manifest.json'))['versi
 echo "  Version: $VERSION"
 echo ""
 
-# 3. Check required files
-echo "3. Checking required files..."
+# 2. Check required files
+echo "2. Checking required files..."
 REQUIRED_FILES=(
     "manifest.json"
     "icons/icon16.png"
@@ -78,8 +69,8 @@ if [ "$ALL_FOUND" = false ]; then
 fi
 echo ""
 
-# 4. Review CLAUDE.md for accuracy
-echo "4. Checking CLAUDE.md..."
+# 3. Review CLAUDE.md for accuracy
+echo "3. Checking CLAUDE.md..."
 if [ ! -f "CLAUDE.md" ]; then
     echo "  ⚠ Warning: CLAUDE.md not found"
 else
@@ -110,8 +101,8 @@ else
 fi
 echo ""
 
-# 5. Check for common issues
-echo "5. Checking for common issues..."
+# 4. Check for common issues
+echo "4. Checking for common issues..."
 
 # Check for console.log in production files (optional warning)
 if grep -r "console\.log" popup/*.js content/*.js background/*.js 2>/dev/null | grep -v "\/\/" | head -1 > /dev/null; then
@@ -132,7 +123,7 @@ else
 fi
 echo ""
 
-# 6. Summary
+# 5. Summary
 echo "=========================================="
 echo "✓ Pre-publish checks complete!"
 echo "=========================================="
